@@ -119,10 +119,13 @@ class CMMSimulator:
     async def generate_and_save_data(self):
         """
         Generates a single data point and saves it to a timestamped CSV file.
+        Uses UTC to ensure data aligns correctly in InfluxDB/Grafana.
         """
         current_timestamp = time.time()
-        start_time = datetime.datetime.fromtimestamp(current_timestamp - (Config.CSV_INTERVAL_SECONDS / 2))
-
+        
+        # FIX: Use UTC for the data payload
+        utc_now = datetime.datetime.now(datetime.timezone.utc)
+        
         elapsed_time_seconds = current_timestamp
 
         current_temperature = self._generate_temperature(elapsed_time_seconds)
@@ -137,23 +140,23 @@ class CMMSimulator:
         observed_length = self._add_gaussian_noise(true_length)
 
         data = {
-            "Timestamp": datetime.datetime.fromtimestamp(current_timestamp).isoformat(),
+            # Use isoformat() on the UTC object so Influx knows exactly when this happened
+            "Timestamp": utc_now.isoformat(), 
             "Simulated_Temperature_C": round(current_temperature, 3),
             "True_Part_Length_mm": round(true_length, 4),
             "Observed_Part_Length_mm": round(observed_length, 4),
         }
         df = pd.DataFrame([data])
 
-        timestamp_str = datetime.datetime.fromtimestamp(current_timestamp).strftime(
-            "%Y%m%d_%H%M%S_%f"
-        )
+        # Filenames can stay local time if preferred, or UTC. Let's keep unique ID.
+        timestamp_str = utc_now.strftime("%Y%m%d_%H%M%S_%f")
         filepath = os.path.join(self.output_dir, f"cmm_reading_{timestamp_str}.csv")
 
         try:
             df.to_csv(filepath, index=False)
-            logger.info(f"Generated CMM data to '{filepath}': Temp={current_temperature:.2f}C, Obs Length={observed_length:.4f}mm")
+            logger.info(f"Generated CMM data: Temp={current_temperature:.2f}C")
         except IOError as e:
-            logger.error(f"Failed to Write CSV to {filepath}: {e}")
+            logger.error(f"Failed to Write CSV: {e}")
             return
         
         self._clean_old_csv_files()

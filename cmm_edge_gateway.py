@@ -2,14 +2,19 @@ import asyncio
 import logging
 import os
 import time
+import datetime
 import pandas as pd
 from typing import Optional
-from collections import deque # Optimized double-ended queue for Store & Forward
+from collections import deque
 
-import aiohttp # Async HTTP client (CRITICAL: Do not use 'requests' library)
+import aiohttp 
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from asyncua import Server, ua
+
+# --- NEW IMPORTS FOR INFLUXDB ---
+from influxdb_client import Point
+from influxdb_client.client.influxdb_client_async import InfluxDBClientAsync
 
 # --- Configuration ---
 class Config:
@@ -25,10 +30,16 @@ class Config:
     # Edge Analytics
     MAX_TEMP_THRESHOLD_C = 24.0
 
-    # IT / Cloud Settings (Phase 3)
+    # IT / Cloud Settings
     MES_API_URL = "http://127.0.0.1:8000/api/v1/cmm/measurements"
     MACHINE_ID = "SANMINA_CMM_01"
-    MAX_BUFFER_SIZE = 1000 # Max items to store offline before dropping old data
+    MAX_BUFFER_SIZE = 1000 
+
+    # --- INFLUXDB SETTINGS (Matches docker-compose & .env) ---
+    INFLUX_URL = "http://localhost:8086"
+    INFLUX_TOKEN = "my-super-secret-admin-token-for-dev"
+    INFLUX_ORG = "sanmina_manufacturing"
+    INFLUX_BUCKET = "cmm_telemetry"
 
 # --- Logging ---
 logging.basicConfig(
@@ -38,84 +49,99 @@ logging.basicConfig(
 logger = logging.getLogger("EdgeGateway")
 
 
+class InfluxConnector:
+    """
+    Handles asynchronous writes to the Time Series Database.
+    This provides the 'Historian' capability.
+    """
+    def __init__(self):
+        self.client = InfluxDBClientAsync(
+            url=Config.INFLUX_URL,
+            token=Config.INFLUX_TOKEN,
+            org=Config.INFLUX_ORG
+        )
+        self.write_api = self.client.write_api()
+
+    async def write_telemetry(self, temp: float, length: float, buffer_size: int, timestamp: datetime.datetime):
+        """
+        Writes a single data point to InfluxDB.
+        """
+        try:
+            # Create a "Point" - the atomic unit of InfluxDB data
+            point = (
+                Point("cmm_metrology")
+                .tag("machine_id", Config.MACHINE_ID)
+                .field("temperature_c", temp)
+                .field("measured_length_mm", length)
+                .field("buffer_queue_size", int(buffer_size)) # Operational Metric
+                .time(timestamp)
+            )
+
+            await self.write_api.write(bucket=Config.INFLUX_BUCKET, record=point)
+            logger.debug(f"InfluxDB Write Success: {length}mm")
+
+        except Exception as e:
+            # We log error but DO NOT raise it. 
+            # Failure to write history should not stop production MES reporting.
+            logger.error(f"InfluxDB Write Failed: {e}")
+
+    async def close(self):
+        """Cleanly close the async client"""
+        await self.client.close()
+
+
 class CloudConnector:
     """
     Handles HTTP communication with the MES.
-    Implements 'Store and Forward' logic for network resilience.
+    Implements 'Store and Forward' logic.
     """
     def __init__(self):
         self._buffer = deque(maxlen=Config.MAX_BUFFER_SIZE)
-        self.session = None # aiohttp session
+        self.session = None 
 
     async def init_session(self):
-        """Create a persistent HTTP session."""
         self.session = aiohttp.ClientSession()
 
     async def close_session(self):
-        """Clean up the session."""
         if self.session:
             await self.session.close()
 
+    def get_buffer_size(self) -> int:
+        """Expose buffer size for telemetry monitoring"""
+        return len(self._buffer)
+
     async def send_measurement(self, payload: dict):
-        """
-        Public method to send data. 
-        Tries to send immediately. If fail, stores in buffer.
-        If success, tries to flush buffer.
-        """
-        # 1. Try to send the current payload
         sent = await self._post_to_cloud(payload)
 
         if not sent:
             self._buffer.append(payload)
-            logger.warning(f"Network Connection Lost! Buffering payload locally. Buffer Size: {len(self._buffer)}")
+            if len(self._buffer) % 10 == 0: # Log only occasionally to reduce noise
+                logger.warning(f"Network Connection Lost! Buffering. Size: {len(self._buffer)}")
         else:
-            # 2. If successful, check if we have a backlog to clear
             if len(self._buffer) > 0:
-                logger.info(f"Network Restored! Flushing {len(self._buffer)} buffered items...")
+                logger.info(f"Network Restored! Flushing {len(self._buffer)} items...")
                 await self._flush_buffer()
 
     async def _post_to_cloud(self, payload: dict) -> bool:
-        """
-        Internal method to perform the actual HTTP POST.
-        Returns True if success, False if network error.
-        """
         if self.session is None:
             await self.init_session()
-
         try:
             async with self.session.post(Config.MES_API_URL, json=payload) as response:
-                if response.status == 200:
-                    return True
-                else:
-                    logger.error(f"MES returned error {response.status}: {await response.text()}")
-                    return False # We treated server errors as 'send failed' for simplicity
-        except aiohttp.ClientConnectorError:
-            # This is the specific error for "Server Down" or "No Internet"
-            return False
-        except Exception as e:
-            logger.error(f"Unexpected HTTP error: {e}")
+                return response.status == 200
+        except Exception:
             return False
 
     async def _flush_buffer(self):
-        """
-        Attempts to empty the buffer. 
-        Stops if connection fails again to preserve order.
-        """
         while len(self._buffer) > 0:
-            # Peek at the oldest item (FIFO)
             item = self._buffer[0]
-            
             success = await self._post_to_cloud(item)
             if success:
-                self._buffer.popleft() # Remove from queue only on success
-                logger.debug("Buffered item flushed successfully.")
+                self._buffer.popleft()
             else:
-                logger.warning("Network unstable during flush. Stopping flush.")
-                break # Stop trying, keep items in queue
+                break
 
 
 class CmmOpcServer:
-    # ... (Same as Phase 2, keeping it brief for the file) ...
     def __init__(self):
         self.server = Server()
         self.server.set_endpoint(Config.OPC_ENDPOINT)
@@ -142,18 +168,18 @@ class CmmOpcServer:
             await self.var_length.write_value(length)
             await self.var_last_update.write_value(timestamp)
             await self.var_status.write_value(status)
-            logger.info(f"OPC-UA Updated: [{status}] Temp={temp}")
+            logger.info(f"Processing: [{status}] Temp={temp:.2f}C | Len={length:.4f}")
         except Exception as e:
             logger.error(f"OPC Error: {e}")
 
 
 class FileProcessor:
-    def __init__(self, opc_server: CmmOpcServer, cloud_connector: CloudConnector):
+    def __init__(self, opc_server: CmmOpcServer, cloud_connector: CloudConnector, influx_connector: InfluxConnector):
         self.opc_server = opc_server
-        self.cloud_connector = cloud_connector # Inject the new dependency
+        self.cloud_connector = cloud_connector
+        self.influx_connector = influx_connector # Inject Influx Dependency
 
     async def process_file(self, file_path: str):
-        # ... (Retry/Debounce logic same as Phase 2) ...
         df = await self._robust_read_csv(file_path)
         
         if df is not None and not df.empty:
@@ -161,33 +187,40 @@ class FileProcessor:
                 latest = df.iloc[-1]
                 temp = float(latest['Simulated_Temperature_C'])
                 length = float(latest['Observed_Part_Length_mm'])
-                timestamp = str(latest['Timestamp'])
+                
+                # Timestamp handling: Convert string to datetime object for Influx
+                timestamp_str = str(latest['Timestamp'])
+                timestamp_dt = pd.to_datetime(timestamp_str).to_pydatetime()
 
-                # 1. Edge Analytics
                 status = "FAIL" if temp > Config.MAX_TEMP_THRESHOLD_C else "ACTIVE"
 
-                # 2. Update OT Layer (OPC-UA)
-                # We use asyncio.gather to run OT and IT updates in parallel!
-                opc_task = self.opc_server.update_values(temp, length, timestamp, status)
-
-                # 3. Update IT Layer (Cloud/MES)
+                # --- PARALLEL EXECUTION ---
+                # We launch three tasks simultaneously using asyncio.gather.
+                # 1. Update PLC/SCADA (OPC-UA)
+                task_opc = self.opc_server.update_values(temp, length, timestamp_str, status)
+                
+                # 2. Update MES (Cloud JSON)
                 json_payload = {
                     "machine_id": Config.MACHINE_ID,
-                    "timestamp": timestamp,
+                    "timestamp": timestamp_str,
                     "temperature": temp,
                     "length": length,
                     "status": status
                 }
-                cloud_task = self.cloud_connector.send_measurement(json_payload)
+                task_cloud = self.cloud_connector.send_measurement(json_payload)
 
-                # Wait for both (or just fire and forget if speed is critical, but await is safer)
-                await asyncio.gather(opc_task, cloud_task)
+                # 3. Update Historian (InfluxDB)
+                # Note: We grab current buffer size to track network health in Grafana
+                current_buffer = self.cloud_connector.get_buffer_size()
+                task_influx = self.influx_connector.write_telemetry(temp, length, current_buffer, timestamp_dt)
+
+                # Await all. return_exceptions=True ensures one failure doesn't crash the others.
+                await asyncio.gather(task_opc, task_cloud, task_influx, return_exceptions=True)
                 
             except Exception as e:
-                logger.error(f"Error processing data: {e}")
+                logger.error(f"Error processing logic: {e}")
 
     async def _robust_read_csv(self, file_path: str) -> Optional[pd.DataFrame]:
-        # (Same Phase 2 logic here)
         for _ in range(Config.MAX_RETRIES):
             try:
                 if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
@@ -212,16 +245,19 @@ class CMMEventHandler(FileSystemEventHandler):
 async def main():
     os.makedirs(Config.WATCH_DIR, exist_ok=True)
     
-    # Init Components
+    # 1. Initialize Components
     cmm_server = CmmOpcServer()
     await cmm_server.init()
     
     cloud_connector = CloudConnector()
-    await cloud_connector.init_session() # Start HTTP session
+    await cloud_connector.init_session()
+    
+    influx_connector = InfluxConnector() # New Component
 
-    processor = FileProcessor(cmm_server, cloud_connector)
+    # 2. Dependency Injection
+    processor = FileProcessor(cmm_server, cloud_connector, influx_connector)
 
-    # Watchdog Setup
+    # 3. Watchdog Setup
     loop = asyncio.get_running_loop()
     event_handler = CMMEventHandler(loop, processor)
     observer = Observer()
@@ -230,13 +266,14 @@ async def main():
     try:
         await cmm_server.start()
         observer.start()
-        logger.info("Sanmina Edge Gateway Running... (Press Ctrl+C to Stop)")
+        logger.info("Sanmina Edge Gateway Running... (InfluxDB Connected)")
         while True: await asyncio.sleep(1)
             
     finally:
         observer.stop(); observer.join()
         await cmm_server.stop()
         await cloud_connector.close_session()
+        await influx_connector.close() # Clean shutdown
 
 if __name__ == "__main__":
     asyncio.run(main())

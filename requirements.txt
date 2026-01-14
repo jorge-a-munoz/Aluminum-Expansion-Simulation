@@ -1,8 +1,8 @@
-aiohttp
-asyncua
-fastapi
-uvicorn
-numpy
 pandas
+numpy
+asyncua
+aiohttp
 watchdog
-pydantic
+uvicorn
+fastapi
+influxdb-client
