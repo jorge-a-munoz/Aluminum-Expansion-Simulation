@@ -1,19 +1,22 @@
-# Virtual Environment
-.venv/
-venv/
-ENV/
+# .gitignore
 
-# Python artifacts
+# Python
 __pycache__/
 *.py[cod]
-*$py.class
+venv/
+.venv/
 
-# Data Output
-cmm_data_output/
+# Environment Variables (CRITICAL)
+.env
 
-# IDE settings
+# IDEs
 .vscode/
 .idea/
 
-# OS files
-.DS_Store
+# Data Output directories
+cmm_data_output/
+
+# Docker volumes (if locally mounted in project root)
+influxdb2_data/
+influxdb2_config/
+grafana_data/
