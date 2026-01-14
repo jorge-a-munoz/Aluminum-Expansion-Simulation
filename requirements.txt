@@ -1,0 +1,8 @@
+aiohttp
+asyncua
+fastapi
+uvicorn
+numpy
+pandas
+watchdog
+pydantic

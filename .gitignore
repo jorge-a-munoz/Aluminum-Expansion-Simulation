@@ -1,0 +1,19 @@
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Data Output
+cmm_data_output/
+
+# IDE settings
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
