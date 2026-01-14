@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  # --- Time Series Database ---
+  influxdb:
+    image: influxdb:2.7
+    container_name: cmm_influxdb
+    ports:
+      - "8086:8086"
+    volumes:
+      # Persistent storage for data and config
+      - influxdb2_data:/var/lib/influxdb2
+      - influxdb2_config:/etc/influxdb2
+    env_file:
+      - .env
+    networks:
+      - cmm_net
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8086/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- Visualization Dashboard ---
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: cmm_grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      # Persistent storage for dashboards and users
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GF_SECURITY_ADMIN_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD}
+    networks:
+      - cmm_net
+    depends_on:
+      influxdb:
+        condition: service_healthy
+
+# --- Persistent Volumes ---
+volumes:
+  influxdb2_data:
+  influxdb2_config:
+  grafana_data:
+
+    # --- Internal Network ---
+networks:
+  cmm_net:
+    driver: bridge
