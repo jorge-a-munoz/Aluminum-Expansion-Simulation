@@ -88,7 +88,7 @@ This system is built to survive network failures.
 
 ---
 
-## Design Decisions (Interview Talking Points)
+## Design Decisions
 
 ### Why `asyncio` instead of Threading?
 I/O operations (Database writes, HTTP requests, OPC updates) are slow. Using Python's `async/await` allows the Gateway to handle high-frequency sensor data without blocking the main execution loop, ensuring the CMM never waits on the Cloud.
