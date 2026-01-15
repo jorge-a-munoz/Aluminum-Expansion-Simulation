@@ -104,7 +104,7 @@
             },
             "gridPos": {
                 "h": 9,
-                "w": 16,
+                "w": 15,
                 "x": 0,
                 "y": 0
             },
@@ -165,8 +165,8 @@
             },
             "gridPos": {
                 "h": 9,
-                "w": 7,
-                "x": 16,
+                "w": 8,
+                "x": 15,
                 "y": 0
             },
             "id": 2,
@@ -196,6 +196,99 @@
             ],
             "title": "Current Temperature",
             "type": "stat"
+        },
+        {
+            "datasource": {
+                "type": "influxdb",
+                "uid": "afa6t5z0eyfb4d"
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "color": {
+                        "fixedColor": "purple",
+                        "mode": "fixed"
+                    },
+                    "custom": {
+                        "axisBorderShow": false,
+                        "axisCenteredZero": false,
+                        "axisColorMode": "text",
+                        "axisLabel": "",
+                        "axisPlacement": "auto",
+                        "barAlignment": 0,
+                        "barWidthFactor": 0.6,
+                        "drawStyle": "bars",
+                        "fillOpacity": 0,
+                        "gradientMode": "none",
+                        "hideFrom": {
+                            "legend": false,
+                            "tooltip": false,
+                            "viz": false
+                        },
+                        "insertNulls": false,
+                        "lineInterpolation": "linear",
+                        "lineWidth": 1,
+                        "pointSize": 5,
+                        "scaleDistribution": {
+                            "type": "linear"
+                        },
+                        "showPoints": "auto",
+                        "showValues": false,
+                        "spanNulls": false,
+                        "stacking": {
+                            "group": "A",
+                            "mode": "none"
+                        },
+                        "thresholdsStyle": {
+                            "mode": "off"
+                        }
+                    },
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {
+                                "color": "green",
+                                "value": 0
+                            },
+                            {
+                                "color": "red",
+                                "value": 80
+                            }
+                        ]
+                    },
+                    "unit": "short"
+                },
+                "overrides": []
+            },
+            "gridPos": {
+                "h": 8,
+                "w": 15,
+                "x": 0,
+                "y": 9
+            },
+            "id": 3,
+            "options": {
+                "legend": {
+                    "calcs": [],
+                    "displayMode": "list",
+                    "placement": "bottom",
+                    "showLegend": true
+                },
+                "tooltip": {
+                    "hideZeros": false,
+                    "mode": "single",
+                    "sort": "none"
+                }
+            },
+            "pluginVersion": "12.3.1",
+            "targets": [
+                {
+                    "query": "from(bucket: \"cmm_telemetry\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"cmm_metrology\")\n  |> filter(fn: (r) => r[\"_field\"] == \"buffer_queue_size\")\n  |> aggregateWindow(every: v.windowPeriod, fn: max, createEmpty: false)\n  |> yield(name: \"max\")",
+                    "refId": "A"
+                }
+            ],
+            "title": "Network Buffer Depth",
+            "type": "timeseries"
         }
     ],
     "preload": false,
@@ -213,5 +306,5 @@
     "timezone": "browser",
     "title": "Sanmina CMM-01: Digital Twin & Thermal Analytics",
     "uid": "adht8jg",
-    "version": 5
+    "version": 8
 }
